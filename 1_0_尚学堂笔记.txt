@@ -1,0 +1,248 @@
+0608：
+1、vi /etc/sysconfig/network-scripts/ifcfg-eth0，修改ip为192.168.98.60
+    vi /etc/hosts，添加以下4行（作为主机名解析？）
+        192.168.98.61 node1
+        192.168.98.62 node2
+        192.168.98.63 node3
+        192.168.98.64 node4
+    vi /etc/sysconfig/network，修改主机名为node0：NETWORKING=YES HOSTNAME=node0
+
+0609：
+1、yum install vim提示YumRepo Error: All mirror URLs are not using ftp, http[s] or file.centos6 yum失败
+参考这里修改镜像源为阿里镜像源（https://blog.csdn.net/weixin_45621658/article/details/110734514）
+2、chkconfig：检查，设置系统的各种服务（redhat/centos）
+    chkconfig xxxd on：xxx服务每次跟随系统启动
+    service xxxd start：xxx服务本次立即启动
+    （禁止防火墙iptables、使能网络时间同步ntpd）
+3、rm -f /etc/udev/rules.d/70-persistent-net.rules：防止克隆虚拟机时重新自动生成ethxx（克隆前不要重启，因为会重新生成）
+4、vim /etc/selinux/config，SELINUX=disabled：禁止安全子系统selinux
+    vim /etc/ssh/sshd_config，UseDNS no：禁止sshd使用UseDNS
+5、init 0：关机；init 6：重启
+6、跳过P8（NAT_桥接_hosts）~P41（网络知识补充）
+
+0611：
+1、init 0关机后，拍个快照，准备克隆（注意：此时不能启动，否则会生成新的70-persistent-net.rules文件）：
+(1)workstation->虚拟机->快照->快照管理器->拍摄快照->名称“初始化安装”->拍摄快照
+(2)workstation->虚拟机->快照->快照管理器->克隆->现有快照->
+    创建连接克隆（要保证原来的node0能正常工作，才可以正常使用链接克隆）->
+    虚拟机名称“node1”->位置选择在node0文件夹同级下创建node1
+2、node1开机，配置网络环境（和node0相同，都开机时会有冲突）和改主机名：
+    vi /etc/sysconfig/network-scripts/ifcfg-eth0，修改ip为192.168.98.61
+    vi /etc/sysconfig/network，修改主机名为node0：NETWORKING=YES HOSTNAME=node1
+    同理再克隆node2、node3、node4
+3、体验DR网络模型：处理高并发
+（1）名词解释：
+1.1：LVS：Linux Virtual Server，属于网络模型第四层的“虚拟服务器”，用户只能看到这个服务器，看不到后面的真实服务器；
+1.2：LB：Load Balancer，“负载调度器”，运行在LVS上
+1.3：DR：Virtual Server via Direct Routing，虚拟服务器背后有多个与其ip相同的真实服务器，但mac不同；
+    DR模型就是把mac修改为想要转发到的目的真实服务器的mac，并透传过去；
+（2）node1作为LB：
+2.1：ifconfig eth0:3 192.168.98.60/24：配置一个虚拟ip
+2.2：echo 1 > /proc/sys/net/ipv4/ip_forward：使能ip_forward，表示不丢弃不属于自己的以太数据、而是转发
+2.3：yum install ipvsadm -y：安装“虚拟服务器”，才能真正成为虚拟服务器
+    ipvsadm -A -t 192.168.98.60:80 -s rr：添加用作“虚拟服务器”中“负载调度器”的ip，且指定其调度算法为“rr轮询”
+    ipvsadm -ln：确认上一个命令添加ip成功
+2.4：ipvsadm -a -t 192.168.98.60:80 -r 192.168.98.62 -g：添加转发规则，虚拟服务器ip->真实服务器ip的映射
+    ipvsadm -a -t 192.168.98.60:80 -r 192.168.98.63 -g：添加转发规则，虚拟服务器ip->真实服务器ip的映射
+    ipvsadm -ln：确认上两个命令添加规则成功
+（3）node2、node3作为真实（http）服务器：
+3.1：echo 1 > /proc/sys/net/ipv4/conf/eth0/arp_ignore
+    echo 2 > /proc/sys/net/ipv4/conf/eth0/arp_announce
+    echo 1 > /proc/sys/net/ipv4/conf/all/arp_ignore
+    echo 2 > /proc/sys/net/ipv4/conf/all/arp_announce：防止真实服务器的mac被PC记住、而绕过虚拟服务器直接访问到
+3.2：ifconfig lo:8 192.168.98.60 netmask 255.255.255.255：
+    真实服务器要配置一个和虚拟服务器相同的ip，以“伪装虚拟服务器”来承担“高并发访问”；
+    （命令执行完可能会断链1min？）
+3.3：yum install httpd -y：安装http服务器
+    vim /var/www/html/index.html（并随便写一些内容）：创建一个简单的、可供浏览器访问的http文件
+    service httpd restart：启动httpd服务器
+（4）用浏览器打开http://192.168.98.60，连续刷新：就可以看到两个真实服务器返回给浏览器的字符串数据
+（5）在node2、node3上执行netstat -natp：可以看到最近接收过的浏览器请求；
+    在node1上执行ipvsadm -lnc：可以看到转发过的请求；
+（6）尝试几次后可能浏览器直接与node2或node3通讯了，
+4、遗留问题：DR模型
+（1）如果将一台RS的httpd服务器关闭，发现请求的时候，响应如果转发到down掉的RS将会出现响应比较慢的情况，有时候还会显示找不到网页。虽然最终或通过启动RS再次给与响应，但是用户提要非常不好。
+（2）如果LB服务器down掉，及时RS全部正常运行，用户请求将得不到响应。
+
+0612：
+1、keepalived：集群管理中保证“高可用”的服务软件。自动检测服务器的状态（心跳机制），发现与宕机、故障时，自动剔除问题机器、调度正常机器等。
+（1）原理：使用keepalived服务的“虚拟路由器”使用了VRRP（Virtual Router Redundancy Protocol，虚拟路由冗余协议），
+        其中协议规定虚拟mac地址为00-00-5E-00-01-<VRID>；
+        真实服务器宕机时，能被虚拟路由器检测到；
+        单个虚拟路由器宕机时，能自动切换到其它虚拟路由器（主备模式：主机恢复后切换回主机；主从模式：主机恢复后不切换回主机？）
+（2）node1作为“虚拟路由器”主机：vim /etc/keepalived/keepalived.conf
+    virtual_ipaddress 192.168.98.60/24 dev eth0 label eth0:8
+    virtual_server 192.168.98.60 80
+    lb_kind DR
+    real_server 192.168.98.62 80
+    SSL_GET改为HTTP_GET
+    digest xxx改为status_code 200
+    real_server 192.168.98.63 80
+    persistence_timeout 0
+（3）node1启用keepalived服务：
+    ipvsadm -C：清除之前的配置
+    service keepalived restart
+（4）用浏览器打开http://192.168.98.60，并不断刷新：能看到页面信息在node2、node3之间切换
+（5）node4作为“虚拟路由器”备机：
+    在node1下执行scp /etc/keepalived/keepalived.conf node4:/etc/keepalived/keepalived.conf后，
+    打开该文件：vim /etc/keepalived/keepalived.conf
+    state BACKUP
+    priority 50：修改node4优先级比MASTER的node1低（数值越大优先级越高）
+（5）node4启用keepalived服务：
+    ipvsadm -C：清除（可能存在的）之前的配置
+    service keepalived restart
+（6）测试1：node2宕机后，node1和node4作为虚拟服务器，都能检测到：
+    在node2上执行service https stop：关闭http服务器
+    在node1上执行ipvsadm -ln：查看检测到的正常http服务器：已经没有node2了；
+    在node4上执行ipvsadm -ln：查看检测到的正常http服务器：已经没有node2了；
+    在node2上执行service https start：重新启动http服务器
+    在node1上执行ipvsadm -ln：查看检测到的正常http服务器：正常出现node2；
+    在node4上执行ipvsadm -ln：查看检测到的正常http服务器：正常出现node2；
+    说明：主、备虚拟服务器都能同步检测到真实服务器的宕机、恢复；
+（7）测试2：node1宕机后，node4接替成为在用的“虚拟路由器”：（发生“虚拟路由器之间的虚拟ip漂移”）
+    在node1上执行ifconfig eth0 down：“node1宕机”的定义：“虚拟网卡对应的真实网卡已断链”
+    在node4上执行ifconfig：查看到keepalived服务创建了和原来node1相同的虚拟ip
+    用浏览器打开http://192.168.98.60，并不断刷新：能看到页面信息在node2、node3之间切换
+    在node4上执行ipvsadm -ln：查看到node4分别与node2、node3成功通讯的次数
+    在node1上执行ifconfig eth0 up：node1从宕机中恢复
+    在node4上执行ifconfig：查看到keepalived服务删除了虚拟ip（因为node1已恢复）
+    用浏览器打开http://192.168.98.60，并不断刷新：能看到页面信息在node2、node3之间切换
+    在node1上执行ipvsadm -ln：查看到node1分别与node2、node3成功通讯的次数
+    说明：主、备虚拟服务器在keepalived服务下能实现自动切换
+2、预览部分视频：
+    Redis、Flink：好像都没有实际编程的内容，都是搭建环境、原理讲解、命令行操作；
+    Hadoop、Storm：有实例编程，特别是Hadoop，至少有两个项目（天气、pagerank）的实操讲解；
+
+0613：
+1、P46：一般在七层做高并发，nginx做负载均衡、zookeeper做集群管理；keepalived是在四层
+2、nginx是一个高性能（对比apache httpd）的http（轻量级web）和反向代理服务器；官方测试能够给支撑5w并发，并且cpu、内存等资源消耗却非常低，运行非常稳定；
+    tengine是nginx的封装、高性能、淘宝开源版，支持10w并发量；
+    学习还是nginx为主；
+3、创建nginx1环境：
+（1）从node0的“初始化安装”克隆新的虚拟机，名为nginx1：
+    vim /etc/sysconfig/network：修改主机名为nginx1
+    vim /etc/sysconfig/network-scripts/ifcfg-eth0：修改eth0 ip为192.168.98.65
+    reboot
+（2）安装、配置nginx：
+    2.1：预先安装nginx依赖的库：
+        yum install gcc gcc-c++ pcre  pcre-devel openssl openssl-devel zlib  zlib-devel -y
+    2.2：从nginx官网下载nginx-1.16.1.tar.gz，在虚拟机nginx1上创建目录/opt/apps并上传到该路径，解压、编译、安装：
+        mkdir -p /opt/apps
+        cd /opt/apps
+        cd nginx-1.16.1
+        ./configure --prefix=/opt/nginx --with-http_ssl_module --with-http_gzip_static_module --error-log-path=/var/log/nginx/nginx.log --pid-path=/var/log/nginx/pid：简单配置安装项，只指定少数的几个参数
+        make && make install
+    2.3：使能nginx命令可用：（可通过添加环境变量的方式，但这里使用另一种）
+        vim /etc/init.d/nginx：新建这么一个nginx脚本，粘贴内容挺多的，保存在windows下的1_3_nginx.txt文件
+            支持service nginx status/start/stop/restart/reload命令
+        chmod +x /etc/init.d/nginx：添加可执行权限（因为是脚本，对应“service nginx”命令）
+        chkconfig --add nginx：添加为系统服务
+        chkconfig --list nginx：查看是否添加成功
+        chkconfig nginx on：设置开机启动
+        reboot
+        service nginx status：查看nginx是否正常启动
+        ps aux | grep nginx：查看nginx是否正常启动
+        浏览器打开http://192.168.98.65/：显示“Welcome to nginx”即表示正常
+
+0614：
+1、P48：“nginx用作http服务器的conf文件配置”之前的概览：
+    id nobody：查看用户nobody是否存在（nginx默认用户）
+    cat /proc/sys/fs/file-max：查看硬件最大支持打开文件的句柄数（1G内存对应97318）
+    ulimit -a：查看当前对shell程序的资源限制
+    ulimit -SHn 65535：设置软件、硬件限制的最大支持打开文件的数量为65535
+    cat /opt/nginx/conf/nginx.conf：看到“sendfile on”表示使用高性能IO操作，
+        使用DMA把数据从kernel_in_buffer[]直接传输到kernel_out_buffer[]，
+        不经过user_buffer[]，从而减少kernel mode和user mode之间的切换
+2、“nginx用作http服务器的conf文件配置”：
+（1）要求：单个nginx服务器虚拟出两个主机（两个域名主机；也可以尝试端口主机，但很少用）：
+    1.1：http://www.sxthenhao.com，连接到/mnt目录，支持下载里面的文件；
+    1.2：http://www.123.com，能访问到简单的html页面（nginx欢迎页）
+（2）配置步骤（注意文件内容都是用空格分隔，而不是逗号）：
+    vim /opt/nginx/conf/nginx.conf：打开配置文件，里面的参数是nginx作为http服务器的一些配置
+    使能gzip on：使能压缩传输
+    keepalived_timeout 0：调试时先把该值设置为0
+    修改一个（域名）主机http://www.sxthenhao.com：
+        server {
+            listen       80;
+            server_name  www.sxthenhao.com;
+            location / {
+                root   /mnt;    //访问时挂载的内容为/mnt目录
+                autoindex on;   //支持下载
+            }
+        }
+    新增一个（域名）主机http://www.123.com：
+        server {
+            listen       80;
+            server_name  www.123.com;
+            location / {
+                root   html;
+                index index.html index_htm;
+            }
+        }
+    service nginx restart
+（3）访问多个虚拟主机：
+    cp -rf /opt/apps/* /mnt：搞点东西到/mnt路径
+    修改本地host文件（C:\Windows\System32\drivers\etc\hosts），添加域名：
+        192.168.98.65 nginx1 www.123.com www.sxthenhao.com
+    浏览器访问http://www.sxthenhao.com：可以看到/mnt下的文件；
+    浏览器访问http://www.123.com：可以看到nginx欢迎页html；
+3、P49：“nginx用作log服务器的conf文件配置”之前的概览：
+    tail -f /opt/nginx/logs/access.log：循环输出nginx默认log文件的尾部内容，实时更新
+    浏览器访问http://www.sxthenhao.com：可以看到log尾部实时追加一些信息；
+    浏览器访问http://www.123.com：可以看到log尾部实时追加一些信息；
+    说明：nginx可提供log信息，因此可以作为log服务器
+4、“nginx用作log服务器的conf文件配置”：
+（1）要求：
+（2）配置步骤（注意文件内容都是用空格分隔，而不是逗号）：
+    vim /opt/nginx/conf/nginx.conf：打开配置文件，在http{}中进行配置
+    log_format myfmt '$remote_addr - $remote_user [$time_local] "$request" '
+        指定自定义的log格式
+    在www.sxthenhao.com的server{}下添加access_log logs/myfmt.log myfmt：
+        指定该server的log使用自定义的log格式、和保存的路径、文件名
+    service nginx reload：重新加载nginx.conf文件
+（3）访问多个log文件：
+    tail -f /opt/nginx/logs/myfmt.log：循环输出nginx自定义log文件的尾部内容，实时更新
+    tail -f /opt/nginx/logs/access.log：循环输出nginx默认log文件的尾部内容，实时更新
+    浏览器访问http://www.sxthenhao.com：可以看到自定义log尾部实时追加一些信息，短了很多，说明使用了自定义的格式
+    浏览器访问http://www.123.com：可以看到自定义log尾部并没有实时追加信息，而默认log尾部有，说明该server的log还在原来的access.log里；
+（4）全局log配置：
+    vim /opt/nginx/conf/nginx.conf
+    在第一个server{}上面一行添加access_log logs/myfmt.log myfmt：即可全局生效（已测试）
+5、（重要，但暂时不做实验，仅理解）nginx的server的location配置：
+    用于指定浏览器访问server时，url的uri部分指向的内容；
+    location对uri有好几种匹配模式（我自己说的）：匹配所有、精确匹配、模式匹配（正则表达式）
+    ...
+6、正向代理与反向代理：
+（1）正向代理：proxy和client同属一个lan，对server透明，即proxy“保护”着client：
+    1.1：防火墙功能
+    1.2：缓冲功能
+（2）反向代理：proxy和server同属一个lan，对client透明，即proxy“保护”着server：
+    2.1：防火墙功能
+    2.2：负载均衡功能
+7、nginx的（软件）负载均衡：反向代理（对比keepalived在四层做负载均衡，nginx是在七层做的）
+（1）方法1：
+    vim /opt/nginx/conf/nginx.conf
+    在第一个server之前添加upstream域名解析列表：表示nginx为这些真实服务器做反向代理
+        upstream yyy{
+            server 192.168.98.62;
+            server 192.168.98.63;
+        }
+    在需要做负载均衡的server里添加相关location：
+        location /toms {
+            proxy_pass http://yyy/;
+        }
+    service nginx reload
+    浏览器访问http://www.sxthenhao.com/toms：不断刷新，可以看到分别访问到node2、node3，说明实现了负载均衡
+（2）方法2：
+    vim /etc/hosts
+    添加域名解析“192.168.98.62 xxx”
+    添加域名解析“192.168.98.63 xxx”
+    service nginx reload
+    浏览器访问http://www.sxthenhao.com/cats：不断刷新，可以看到分别访问到node2、node3，说明实现了负载均衡
+（3）方法1/2的对比：
+    3.1：方法1直接在nginx.conf文件中添加server的ip列表，需要用“service nginx reload”命令重新加载才能生效；
+        所以适合小企业的配置，不适合大企业；
+    3.2：方法2通过改hosts文件的域名解析来更新server的ip列表，虽然上例有“service nginx reload”命令，
+        但在大企业中有外部的DNS服务器，所以并不需要实际对nginx服务器reload，因此该方法适合大企业；
+
+
