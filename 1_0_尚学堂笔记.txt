@@ -245,4 +245,71 @@
     3.2：方法2通过改hosts文件的域名解析来更新server的ip列表，虽然上例有“service nginx reload”命令，
         但在大企业中有外部的DNS服务器，所以并不需要实际对nginx服务器reload，因此该方法适合大企业；
 
-
+0616：
+1、P52：session一致性：给实现反向代理服务器的nginx服务器，外加“内存数据库”功能（目前用memcached实现，以后用redis）
+2、环境准备：
+（1）node2、node3：
+    1.1：service httpd start：使能httpd服务器；
+    1.2：安装tomcat服务：
+        （tomcat是基于java的Web应用服务器，需要通过端口号8080，才能访问到；否则是普通的http服务器）
+        上传apache-tomcat-7.0.69.tar.gz到/opt/apps
+            tar -xzvf apache-tomcat-7.0.69.tar.gz
+            cd apache-tomcat-7.0.69/webapps/ROOT/
+            vim index.jsp：修改欢迎页（改为简单的字符串内容，vim下用dG删除到文件末尾）
+                from 192.168.98.62 <br/>：node3要注意填ip为63
+                session=<%=session.getId()%>
+            cd /opt/apps/apache-tomcat-7.0.69/bin
+            ./startup.sh：这样才算启动tomcat服务
+            ps aux | grep tomcat：确认tomcat已正常启动
+    1.3：安装jdk：
+        同样上传jdk-7u80-linux-x64.rpm到/opt/apps
+        cd /opt/apps
+        rpm -ivh jdk-7u80-linux-x64.rpm：默认安装为/usr/java/jdk1.7.0_80
+        vim /etc/profile：在文件最后添加环境变量
+            export JAVA_HOME=/usr/java/jdk1.7.0_80
+            export PATH=$PATH:$JAVA_HOME/bin
+        source /etc/profile：使新的环境变量生效
+        jps：查看环境变量是否生效（正常输出类似“1722 Jps”）
+    1.4：浏览器访问http://192.168.98.62:8080：看到node2的session
+    1.5：浏览器访问http://192.168.98.63:8080：看到node3的session，和node2不一样，说明已经准备好“session不一致”的环境
+（2）nginx1：
+    2.1：yum install libevent -y：安装libevent（是一个“异步事件通知库”，用于“事件驱动的网络服务器”）
+    2.2：yum install memcached -y：安装memcached（是一种“分布式的、基于内存的”key-value存储系统；以后会学redis代替这个）
+    2.3：memcached -d -m 128m -p 11211 -l 192.168.98.65 -u root -P /tmp/：
+        后台启动memcached：缓存128M，端口号11211，存储的文件路径在/tmp/
+    2.4：ps aux | grep memcached：确认memcached已正常启动
+（3）node2、node3：配置把session保存到nginx1服务器（以保持session一致性）
+    3.1：/opt/apps/apache-tomcat-7.0.69/bin/shutdown.sh：先关闭tomcat服务
+    3.2：vim /opt/apps/apache-tomcat-7.0.69/conf/context.xml：配置tomcat使用nginx1上的memcached系统
+        在</Context>的上面添加内容：（具体含义这里不分析；以后更多地使用redis代替memcached）
+        <Manager className="de.javakaffee.web.msm.MemcachedBackupSessionManager" 
+            memcachedNodes="n1:192.168.98.65:11211" 
+            sticky="false" 
+            lockingMode="auto"
+            sessionBackupAsync="false"
+            requestUriIgnorePattern=".*\.(ico|png|gif|jpg|css|js)$"
+            sessionBackupTimeout="1000" transcoderFactoryClass="de.javakaffee.web.msm.serializer.kryo.KryoTranscoderFactory" 
+        />
+    3.3：cd /opt/apps/apache-tomcat-7.0.69/lib：
+        上传9个相关的jar包到tomcat的/lib目录（才能实现“session一致性”功能）：
+        asm-3.2.jar
+        kryo-1.04.jar
+        kryo-serializers-0.11.jar
+        memcached-session-manager-1.7.0.jar
+        memcached-session-manager-tc7-1.8.1.jar
+        minlog-1.2.jar
+        msm-kryo-serializer-1.7.0.jar
+        reflectasm-1.01.jar
+        spymemcached-2.7.3.jar
+    3.4：/opt/apps/apache-tomcat-7.0.69/bin/startup.sh：重新启动tomcat服务
+（4）nginx1：
+    4.1：vim /opt/nginx/conf/nginx.conf：修改指定反向代理的真实服务器端口号为8080，表示对node2、node3的tomcat服务使用memcached
+        upstream yyy{
+            server 192.168.98.62:8080;
+            server 192.168.98.63:8080;
+        }
+    4.2：service nginx restart
+    4.3：浏览器打开http://www.sxthenhao.com/toms，不断刷新，可以看到：
+        通过nginx反向代理可以轮流访问到192.168.98.62:8080和192.168.98.63:8080，
+        更重要的是能同时保证了“session的一致性”
+（5）待解决问题：浏览器刷新http://www.sxthenhao.com/toms是看到session还是会变，还没实现一致性？
