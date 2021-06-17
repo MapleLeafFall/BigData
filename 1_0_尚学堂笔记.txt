@@ -92,10 +92,10 @@
     ipvsadm -C：清除（可能存在的）之前的配置
     service keepalived restart
 （6）测试1：node2宕机后，node1和node4作为虚拟服务器，都能检测到：
-    在node2上执行service https stop：关闭http服务器
+    在node2上执行service httpd stop：关闭http服务器
     在node1上执行ipvsadm -ln：查看检测到的正常http服务器：已经没有node2了；
     在node4上执行ipvsadm -ln：查看检测到的正常http服务器：已经没有node2了；
-    在node2上执行service https start：重新启动http服务器
+    在node2上执行service httpd start：重新启动http服务器
     在node1上执行ipvsadm -ln：查看检测到的正常http服务器：正常出现node2；
     在node4上执行ipvsadm -ln：查看检测到的正常http服务器：正常出现node2；
     说明：主、备虚拟服务器都能同步检测到真实服务器的宕机、恢复；
@@ -270,8 +270,8 @@
             export PATH=$PATH:$JAVA_HOME/bin
         source /etc/profile：使新的环境变量生效
         jps：查看环境变量是否生效（正常输出类似“1722 Jps”）
-    1.4：浏览器访问http://192.168.98.62:8080：看到node2的session
-    1.5：浏览器访问http://192.168.98.63:8080：看到node3的session，和node2不一样，说明已经准备好“session不一致”的环境
+    1.4：浏览器访问http://192.168.98.62:8080：看到node2的session（刷新不会变）
+    1.5：浏览器访问http://192.168.98.63:8080：看到node3的session（刷新也不会变），和node2不一样，说明已经准备好“session不一致”的环境
 （2）nginx1：
     2.1：yum install libevent -y：安装libevent（是一个“异步事件通知库”，用于“事件驱动的网络服务器”）
     2.2：yum install memcached -y：安装memcached（是一种“分布式的、基于内存的”key-value存储系统；以后会学redis代替这个）
@@ -313,3 +313,27 @@
         通过nginx反向代理可以轮流访问到192.168.98.62:8080和192.168.98.63:8080，
         更重要的是能同时保证了“session的一致性”
 （5）待解决问题：浏览器刷新http://www.sxthenhao.com/toms是看到session还是会变，还没实现一致性？
+
+0617：
+1、vscode中git push报错如下时：
+    fatal: unable to access 'https://github.com/MapleLeafFall/BigData.git/': OpenSSL SSL_connect: SSL_ERROR_SYSCALL in connection to github.com:443
+    解决办法：先git rebase一下，再git push即可。
+        CWQ@CWQ-PC /cygdrive/e/2_Study/1_2_尚学堂笔记
+        $ git rebase
+        First, rewinding head to replay your work on top of it...
+        Applying: P52:缓存一致性
+        
+        CWQ@CWQ-PC /cygdrive/e/2_Study/1_2_尚学堂笔记
+        $ git push
+        fatal: HttpRequestException encountered.
+        发送请求时出错。
+        Counting objects: 3, done.
+        Delta compression using up to 4 threads.
+        Compressing objects: 100% (3/3), done.
+        Writing objects: 100% (3/3), 2.34 KiB | 0 bytes/s, done.
+        Total 3 (delta 2), reused 0 (delta 0)
+        remote: Resolving deltas: 100% (2/2), completed with 2 local objects.
+        To https://github.com/MapleLeafFall/BigData.git
+        7d907e1..a565a67  main -> main
+2、问题未解决：即使在http://192.168.98.62:8080/和http://192.168.98.63:8080/下刷新，sessionId都会变（理论上只要浏览器不关闭就不会变才对）：
+    原因未知；可能只在jar包或其它功能在安装的第一次有效？
