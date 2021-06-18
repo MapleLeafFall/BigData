@@ -337,3 +337,20 @@
         7d907e1..a565a67  main -> main
 2、问题未解决：即使在http://192.168.98.62:8080/和http://192.168.98.63:8080/下刷新，sessionId都会变（理论上只要浏览器不关闭就不会变才对）：
     原因未知；可能只在jar包或其它功能在安装的第一次有效？
+
+0618：
+1、P53：动静分离：（不做实验）
+思路：新增一个nginx2服务器，上面放有静态页面资源，如image/css等，然后在nginx1也新增对它的反向代理。
+    使得nginx2和node2、node3同级；
+    浏览器向nginx1请求静态资源时（如：http://www.sxthenhao.com/image），会从nginx2获得；
+    浏览器向nginx1请求动态资源时（如：http://www.sxthenhao.com/toms），会从node2、node3获得；
+2、P55：高并发复习，理解以下名词：
+tomcat（真实服务器的网页服务）
+nginx、反向代理（用于高并发）、负载均衡、master进程、worker进程、（重要文件的路径）/usr/local/nginx/{conf,html,sbin,log}；
+nginx的一些参数：sendfile on、upstream server、location/{...}等；
+keepalived（可用于nginx服务器的高可用）、VRRP、VIP、VRID、IP漂移；
+3、P56~Pxx：hadoop基础
+（1）内容安排：6天课程=2天分布式存储+2天MapReduce+2天案例
+（2）P56：1T文件问题（全排序）：
+    1T文件分布在10000台内存为100M的服务器上，每台服务器上都是有序的，如何合并为一个有序的大文件？
+    用归并排序；
