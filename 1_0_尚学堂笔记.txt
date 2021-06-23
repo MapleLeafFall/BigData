@@ -184,6 +184,10 @@
     cp -rf /opt/apps/* /mnt：搞点东西到/mnt路径
     修改本地host文件（C:\Windows\System32\drivers\etc\hosts），添加域名：
         192.168.98.65 nginx1 www.123.com www.sxthenhao.com
+        192.168.98.61 node1：这4行是给后面的实验用的
+        192.168.98.62 node2
+        192.168.98.63 node3
+        192.168.98.64 node4
     浏览器访问http://www.sxthenhao.com：可以看到/mnt下的文件；
     浏览器访问http://www.123.com：可以看到nginx欢迎页html；
 3、P49：“nginx用作log服务器的conf文件配置”之前的概览：
@@ -407,3 +411,122 @@ keepalived（可用于nginx服务器的高可用）、VRRP、VIP、VRID、IP漂�
 5、hadoop伪分布式搭建：
 （1）即在同一个服务器（比如node1）上同时搭建：namenode、secondary namenode、datanode1、datanode2
 
+0623：
+1、hadoop伪分布式搭建：
+（1）开发环境搭建：
+    java ide：安装intellij idea version2018.3.6（视频用的是2018.3.2）
+（2）hadoop环境（部署到node1）：
+    2.1：复制hadoop-2.6.5.tar.gz到/root，并解压：tar -zxf hadoop-2.6.5.tar.gz -C /opt
+    2.2：添加hadoop相关环境变量：vim /etc/profile
+        export HADOOP_HOME=/opt/hadoop-2.6.5
+        export PATH=$PATH:$HADOOP_HOME/bin:$HADOOP_HOME/sbin
+    2.3：更新环境变量：source /etc/profile
+（3）jdk环境（部署到node1）：
+    3.1：复制jdk-8u221-linux-x64.rpm到/root，并安装：rpm -ivh jdk-8u221-linux-x64.rpm
+    3.2：添加jdk相关环境变量：vim /etc/profile
+        export JAVA_HOME=/usr/java/default
+        export PATH=$PATH:$JAVA_HOME/bin
+    3.3：更新环境变量：source /etc/profile
+（4）配置免秘钥：
+    ssh-keygen -t dsa -P '' -f ~/.ssh/id_dsa：
+        生成ssh秘钥，同时用-P指定密语（passphrase，指允许包含标点符号的密码）为空；
+    cat ~/.ssh/id_dsa.pub >> ~/.ssh/authorized_keys：
+        认证的主机（node1）登录该主机（也是node1）时，免用户密码（>>表示追加，>表示覆盖）；
+        但（貌似）在“自己登录自己”时，不免ssh密语；
+（5）修改hadoop中对JAVA的引用路径（否则ssh登录时有问题）：
+    vim /opt/hadoop-2.6.5/etc/hadoop/hadoop-env.sh
+        export JAVA_HOME=/usr/java/default
+（6）修改浏览器访问（namenode服务器的）hadoop时，默认路径前缀的缩写（两个）：
+    vim /opt/hadoop-2.6.5/etc/hadoop/core-site.xml
+        <configuration>
+        <!-- 指定访问HDFS的时候路径的默认前缀  /  hdfs://node1:9000/ -->
+        <property>
+        <name>fs.defaultFS</name>
+        <value>hdfs://node1:9000</value>
+        </property>
+        <!-- 指定hadoop的临时目录位置，它会给namenode、secondarynamenode以及datanode的存储目录指定前缀 -->
+        <property>
+        <name>hadoop.tmp.dir</name>
+        <value>/var/bjsxt/hadoop/pseudo</value>
+        </property>
+        </configuration>
+    （可以不用手动创建/var/bjsxt/hadoop/pseudo目录，下面格式化hdfs时会自动创建）
+（7）修改hdfs正常工作的参数：副本个数为1、secondarynamenode位置为http协议的node1:50090端口
+    vim /opt/hadoop-2.6.5/etc/hadoop/hdfs-site.xml
+        <configuration>
+        <!-- 指定block副本数 -->
+        <property>
+        <name>dfs.replication</name>
+        <value>1</value>
+        </property>
+        <!-- 指定secondarynamenode所在的位置 -->
+        <property>
+        <name>dfs.namenode.secondary.http-address</name>
+        <value>node1:50090</value>
+        </property>
+        </configuration>
+（8）修改datanode所在节点：（即该namenode会通过node1定位到datanode）
+    vim /opt/hadoop-2.6.5/etc/hadoop/slaves：从文件名看出datanode是namenode的slave
+        node1
+（9）格式化（hdfs中的）namenode：
+    hdfs namenode -format
+    ls /var/bjsxt/hadoop/pseudo：检查该目录发现已成功创建，说明格式化命令会使用core-site.xml文件的配置
+（10）启动hadoop：
+    start-dfs.sh
+        21/06/12 06:22:03 WARN util.NativeCodeLoader: Unable to load native-hadoop library for your platform... using builtin-java classes where applicable：
+            正常警告，源码编译的才会没有
+        Starting namenodes on [node1]
+        node1: starting namenode, logging to /opt/hadoop-2.6.5/logs/hadoop-root-namenode-node1.out
+        node1: starting datanode, logging to /opt/hadoop-2.6.5/logs/hadoop-root-datanode-node1.out
+            这个是log，可供以后查看
+        Starting secondary namenodes [node1]
+        node1: starting secondarynamenode, logging to /opt/hadoop-2.6.5/logs/hadoop-root-secondarynamenode-node1.out
+        21/06/12 06:22:25 WARN util.NativeCodeLoader: Unable to load native-hadoop library for your platform... using builtin-java classes where applicable
+    jps：查看所有的java进程
+        2448 DataNode
+        2720 Jps
+        2368 NameNode
+        2618 SecondaryNameNode
+2、浏览器体验搭建好的hadoop伪分布式环境：
+（1）浏览器输入node1:50070：
+    这个50070是默认的hadoop端口号，不是上面配置的端口
+（2）首页overview下拉能看到datanode数量、空间使用的概览；
+（3）点击live nodes可以看到datanode的详细信息：
+    这里看到单个datanode=node1:50010，也是使用默认端口号，不是上面配置的端口
+（4）点击utilities->browse the file system：
+    输入/，点击go：看不到内容，因为这个hdfs系统创建好以后还没有保存过文件
+（5）创建一个比较大的文本文件：
+    cd /root
+    for i in `seq 100000`; do echo "hello bjsxt $i" >> hello.txt; done
+    cat hello.txt | head -n 5、cat hello.txt | tail -n 5：
+        可以看到创建的文件包含100001行的字符串
+（6）上传该文件到hdfs的根目录下：（简单操作）
+    hdfs dfs -put /root/hello.txt /
+    ls -lh /var/bjsxt/hadoop/pseudo/dfs/data/current/BP-1200552669-192.168.98.61-1623449821856/current/finalized/subdir0/subdir0/
+        该命令可以看到文件上传成功后的实际占用大小为1.8M
+    浏览器回到utilities->browse the file system，输入/，点击go：
+        可以看到hello.txt，点开看到size=1.71M和默认blocksize=128M，只有1个副本为block0（对应hdfs-site.xml设置的默认副本数为1）
+（7）再上传一个文件到hdfs的根目录下：（指定较小的blocksize，拆分block）
+    cp hello.txt hh.txt
+    hdfs dfs -D dfs.blocksize=1048576 -D dfs.replication=1 -put hh.txt /
+        指定bocksize=1M，副本数=1
+    cd /var/bjsxt/hadoop/pseudo/dfs/data/current/BP-1200552669-192.168.98.61-1623449821856/current/finalized/subdir0/subdir0/
+    ls -lh
+        该命令可以看到文件上传成功后拆分为两个文件，大小分别为1.0M、723k
+    cat blk_1073741826 | tail -n 4
+        hello bjsxt 58869
+        hello bjsxt 58870
+        hello bjsxt 58871
+        hell
+        可以看到文件的第一个block被截断
+    cat blk_1073741827 | head -n 4
+        o bjsxt 58872
+        hello bjsxt 58873
+        hello bjsxt 58874
+        hello bjsxt 58875
+        可以看到文件的第二个block接着被截断的地方开始
+    浏览器回到utilities->browse the file system，输入/，点击go：
+        可以看到hh.txt，点开看到size=1.71M和默认blocksize=1M，有1个副本是block1
+（8）停止hdfs服务：
+    stop-dfs.sh
+    
