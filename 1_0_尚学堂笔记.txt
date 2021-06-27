@@ -555,7 +555,7 @@ keepalived（可用于nginx服务器的高可用）、VRRP、VIP、VRID、IP漂�
             需要上传到namenode才能被发现，而且越完整越好；
 （3）命令操作示例：
     略；
-2、P65-P66：（重要：面试题）hdfs文件上传（《hadoop第1天.doc》文档里有框图）：
+2、P65-P66：（重要：面试题）hdfs写流程（文件上传）（《hadoop第1天.doc》文档里有框图）：
 （1）基本概念：
     1.1：文件上传的操作涉及3个部分：
         - clientnode：跑着client JVM->hdfs client（从hdfs命令调用的/opt/haddop-2.6.5/bin/hdfs文件可以看到，
@@ -586,5 +586,56 @@ keepalived（可用于nginx服务器的高可用）、VRRP、VIP、VRID、IP漂�
                 并把dataqueue中剩余的writepacket的blockid更新、通知namenode也更新blockid、更新datanode管线信息（剔除掉线的datanode）、使能重发；
         - 后处理：掉线的datanode“醒来”后，发现自己的blockid和namenode不同，就自动删掉自己之前收到的writepacket
                 （而且因为此时已不属于新的管线，所以也不会再收到之前block的writepacket）；
-        
 
+0627：
+1、P67：小测试：在clientnode上传大文件时手动中断（制造失败），会看到hdfs最终没有保存该文件
+（1）启动hadoop：
+    start-dfs.sh
+    jps
+（2）打开浏览器访问hdfs，准备等下上传大文件时不断刷新，查看进度：
+    http://node1:50070->utilities->browse the file system->/,go
+（3）上传一个171MB的文件jdk-8u221-linux-x64.rpm，并准备用ctrl+c中断上传过程：
+    3.1：hdfs dfs -D dfs.blocksize=1048576 -D dfs.replication=1 -put jdk-8u221-linux-x64.rpm /
+    3.2：在浏览器不断刷新，能看到有一个实时刷新size的文件：jdk-8u221-linux-x64.rpm._COPYING_；
+    3.3：回到hdfs执行上传命令的窗口，ctrl+c中断；
+    3.4：再在浏览器刷新，能看到jdk-8u221-linux-x64.rpm._COPYING_不见了；
+    3.5：说明“如果上传过程中clientnode宕机，文件创建失败，之前上传的部分也会删掉”
+（4）？实际参照视频中做实验时，出现报错，并hdfs没有自动删掉之前上传的部分：
+    21/06/12 07:28:22 INFO fs.FileSystem: Ignoring failure to deleteOnExit for path hdfs://node1:9000/jdk-8u221-linux-x64.rpm._COPYING_
+    put: java.nio.channels.ClosedChannelException
+    at org.apache.hadoop.hdfs.DFSOutputStream.checkClosed(DFSOutputStream.java:1618)
+    at org.apache.hadoop.fs.FSOutputSummer.write(FSOutputSummer.java:104)        ...
+    ...
+    at org.apache.hadoop.util.ToolRunner.run(ToolRunner.java:84)
+    at org.apache.hadoop.fs.FsShell.main(FsShell.java:340)
+（5）备用命令：从hdfs删除文件：
+    hadoop fs -rm -r -skipTrash /path_to_file/file_name
+2、P68：（重要）hdfs读流程（按block读取，多个block组合成单个文件）
+（1）clientnode中涉及读流程的结构：
+    clientnode->
+        HDFSclient（发起单个文件读取操作的客户端）->
+            DistributedFileSystem（对象，发起单次对namenode读取）->namenode
+            DFSInputStream（对象，发起按block对datanode读取）->datanode
+（2）读文件的正常流程：
+    2.1：clientnode的hdfsclient发起读流程：通过open方法打开希望读取的文件，然后按block让DistributedFileSystem
+        （？通过RPC远程调用：效果是实时不断更新block的datanode信息？）
+        从namenode请求文件开头第一批的block及其副本所在的datanode；
+    2.2：DistributedFileSystem获取到目的datanode列表后，赋给DFSInputStream：
+        此时DFSInputStream管理着datanode和namenode的IO，其中datanode信息来自对象DistributedFileSystem，namenode来自客户端HDFSclient；
+    2.3：客户端HDFSclient开始调用read方法：（客户端只读取单个文件的连续数据流，不管理block读取的切换）
+        - DFSInputStream从连接距离最近的datanode开始尝试读取block；
+        - 读取完该block后，即关闭与该datanode的连接；
+        - 然后寻找下一个block的最佳datanode；（重要：block读取的切换由DFSInputStream自动实现，以保证“读流程”对客户端的透明）
+        - DFSInputStream对多个block的读取顺序不是按序号的，而是按照它与datanode新建连接的顺序（？所以datanode的负载会影响读到block的顺序？）
+        - DFSInputStream读取第一批block后，就自动按照之前DistributedFileSystem给的namenode信息，再去获取第二批、甚至后续批次的block信息
+            （block及其副本namenode的位置）
+        - 客户端完成本次文件读取（可能是DFSInputStream读取完所有block后通知客户端，也可能客户端提前终止读取？）后，
+            就close掉DFSInputStream的输入流；
+（3）读文件的异常流程：
+    3.1：DFSInputStream读block过程中发现某个block数据损坏（meta信息没对上），
+        就会在本地记录该不损坏block所在的datanode，并立即上报给namenode（以全局更新信息），然后再尝试从其它datanode读取block副本；
+        （？视频中说的是“客户端上报”，实际应该是“客户端下的DFSInputStream对象上报”？因为客户端HDFSclient不直接管理block）
+    3.2：namenode得知某个block损坏后，就发起一次新的“复制事务操作”：从一个好的block副本复制该block到另一个datanode上；
+        （此时只是block损坏，没有判断datanode掉线或宕机，所以namenode只处理单个block）
+    3.3：（重要）DFSInputStream将不会“反复读取”该datanode上的后续block，即使namenode后续返回的列表里还有这个datanode：
+        因为DFSInputStream发现有block损坏以后，这个datanode都不再是“最优节点”了；而实际上第一个“最优节点”是从距离远近来选取的，并不表示“性能最优”；
