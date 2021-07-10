@@ -867,3 +867,186 @@ keepalived（可用于nginx服务器的高可用）、VRRP、VIP、VRID、IP漂�
         - 用jps看node3/4的datanode启动总有异常：可能其中一个的没启动成功、可能两个都没成功；
             从log看应该和clusterID、blockpoolID有关，但视频中没解决；
 
+3、hadoop HA（high availability，高可用）
+（1）要解决的问题：利用主、备两个namenode来解决单点故障，两者之间利用多个journalnode（2N+1，N是namenode个数）
+    来管理主备的自动切换；也支持手动切换，以支持hdfs升级时的需要；
+（2）和secondarynamenode的区别：（https://www.jianshu.com/p/377e15016e68）
+    2.1：namenode/secondarynamenode：hadoop1.x的机制、非HA、冷备份、非实时，比如每过1h或发生1000000次edits才合并一次checkpoints到fsimage；
+    2.2：activenamenode/standbynamenode：hadoop2.x的机制、HA、热备份、实时，
+（3）实验：
+    3.1：节点配置：
+        - node1：namenode、zkfc（ZooKeeperFailoverController）、journalnode
+        - node2：namenode、zkfc、zookeeper、datanode、journalnode
+        - node3：datanode、zookeeper、journalnode
+        - node4：datanode、zookeeper
+    3.2：安装zookeeper（到node2/3/4）：
+        tar -zxf zookeeper-3.4.6.tar.gz -C /opt
+        vim /etc/profile
+            export ZOOKEEPER_PREFIX=/opt/zookeeper-3.4.6
+            export PATH=$PATH:$ZOOKEEPER_PREFIX/bin
+        . /etc/profile：使zookeeper环境变量生效（尝试补全zk看有没有正确的提示即可）
+    3.3：配置zookeeper：
+        cd /opt/zookeeper-3.4.6/conf/
+        cp zoo_sample.cfg zoo.cfg
+        vim zoo.cfg
+            修改：dataDir=/var/bjsxt/zookeeper/data
+            添加：server.1=node2:2881:3881
+                    server.2=node3:2881:3881
+                    server.3=node4:2881:3881
+    3.4：准备zookeeper运行环境：
+        mkdir -p /var/bjsxt/zookeeper/data
+    	echo 2 > /var/bjsxt/zookeeper/data/myid：
+            设置zookeeperid，用于多个zookeeper服务器的优先级判断；node2/3/4分别设置这个值为1/2/3（即不同值）；
+        scp -r /opt/zookeeper-3.4.6/ node3:/opt
+        scp -r /opt/zookeeper-3.4.6/ node4:/opt
+        scp /etc/profile node3:/etc/
+        scp /etc/profile node4:/etc/：复制zookeeper到node3/4
+        在node3/4上执行：
+            . /etc/profile：生效环境变量
+            mkdir -p /var/bjsxt/zookeeper/data
+            echo 3 > /var/bjsxt/zookeeper/data/myid：（node3/4分别填2/3）创建和node2一样的目录和id文件
+    3.5：启动各个zkServer：
+        zkServer.sh start：在node2/3/4上都启动zk服务
+        jps：zk启动时能看到QuorumPeerMain
+    3.6：配置hdfs环境：先在node1上配置，然后scp到node2/3/4
+        cd /opt/hadoop-2.6.5/etc/hadoop
+        vim core-site.xml
+            <configuration>
+                <property>
+                    <name>fs.defaultFS</name>
+                    <!-- 先给集群起名mycluster，然后再在hdfs-site.xml中解析 -->
+                    <value>hdfs://mycluster</value>
+                </property>
+                <property>
+                    <name>hadoop.tmp.dir</name>
+                    <value>/var/bjsxt/hadoop/ha</value>
+                </property>
+                <!-- 指定每个zookeeper，用于namenode上的zkfc启动后要到zk抢占节点；抢到的作为active，其它的作为standby -->
+                <property>
+                    <name>ha.zookeeper.quorum</name>
+                    <value>node2:2181,node3:2181,node4:2181</value>
+                </property>
+            </configuration>
+        vim hdfs-site.xml
+            <configuration>
+                <!-- 指定block默认副本个数 -->
+                <property>
+                    <name>dfs.replication</name>
+                    <value>2</value>
+                </property>
+                <!-- 用于解析fs.defaultFS中hdfs://mycluster中的mycluster地址 -->
+                <property>
+                    <name>dfs.nameservices</name>
+                    <value>mycluster</value>
+                </property>
+                <!-- mycluster下面由两个namenode服务支撑 -->
+                <property>
+                    <!--指定集群mycluster的所有namenode：下面再分别做解析-->
+                    <name>dfs.ha.namenodes.mycluster</name>
+                    <value>nn1,nn2</value>
+                </property>
+                <!--指定nn1的地址和端口号，发布的是一个hdfs://的服务-->
+                <property>
+                    <name>dfs.namenode.rpc-address.mycluster.nn1</name>
+                    <value>node1:8020</value>
+                </property>
+                <property>
+                    <name>dfs.namenode.rpc-address.mycluster.nn2</name>
+                    <value>node2:8020</value>
+                </property>
+                <!--指定三台journal服务器的地址-->
+                <property>
+                    <name>dfs.namenode.shared.edits.dir</name>
+                    <value>qjournal://node1:8485;node2:8485;node3:8485/mycluster</value>
+                </property>
+                <!-- 指定客户端查找active的namenode的策略：会给所有namenode发请求，以决定哪个是active的 -->
+                <property>
+                    <name>dfs.client.failover.proxy.provider.mycluster</name>
+                    <value>org.apache.hadoop.hdfs.server.namenode.ha.ConfiguredFailoverProxyProvider</value>
+                </property>
+                <!--ssh围栏：用于在发生故障切换的时候，ssh到对方服务器，将namenode进程kill掉  kill -9  55767-->
+                <property>
+                    <name>dfs.ha.fencing.methods</name>
+                    <value>sshfence</value>
+                </property>
+                <property>
+                    <name>dfs.ha.fencing.ssh.private-key-files</name>
+                    <value>/root/.ssh/id_dsa</value>
+                </property>
+                <!-- 指定journalnode在哪个目录存放edits log文件 -->
+                <property>
+                    <name>dfs.journalnode.edits.dir</name>
+                    <value>/var/bjsxt/hadoop/ha/jnn</value>
+                </property>
+                <!--启用自动故障切换-->
+                <property>
+                    <name>dfs.ha.automatic-failover.enabled</name>
+                    <value>true</value>
+                </property>
+            </configuration>
+        scp core-site.xml hdfs-site.xml node2/3/4:`pwd`
+    3.7：启动zk集群（HA、高可用的hadoop）：
+        - 先启动全部的jounalnode：
+            在node1/2/3上执行hadoop-daemon.sh start journalnode
+        - 在node1上格式化hdfs，并启动node1的namenode：
+            hdfs namenode -format
+            hadoop-daemon.sh start namenode
+        - 在node2上同步元数据：
+            hdfs namenode -bootstrapStandby：看到以下打印表示node2作为nn2，将同步nn1的数据
+                =====================================================
+                About to bootstrap Standby ID nn2 from:
+                        Nameservice ID: mycluster
+                        Other Namenode ID: nn1
+                Other NN's HTTP address: http://node1:50070
+                Other NN's IPC  address: node1/192.168.98.61:8020
+                            Namespace ID: 631411776
+                            Block pool ID: BP-1530779931-192.168.98.61-1623450526455
+                            Cluster ID: CID-3af802db-7a6a-4141-b74f-69c7affcf225
+                        Layout version: -60
+                    isUpgradeFinalized: true
+                =====================================================
+        - 第一次启动并查看zookeeper（前提是已经使能各个zkServer）：
+            zkCli.sh
+            ls /hadoop-ha/mycluster：看到当前zookeeper的默认（工作？）目录的内容为空的[]
+        - 初始化zookeeper：
+            hdfs zkfc -formatZK
+        - 在node1上启动集群：
+            start-dfs.sh
+    3.8：实验1：关掉active的namenode，看会不会漂移到standby的namenode：
+        - 第二次查看zookeeper：
+            ls /hadoop-ha/mycluster
+                [ActiveBreadCrumb, ActiveStandbyElectorLock]
+            get /hadoop-ha/mycluster/ActiveStandbyElectorLock
+                myclusternn1node1
+                ...
+                ephemeralOwner = 0x37a8ec666140001：这是node1的zkfc与该zkServer连接的sessionID
+        - 浏览器分别打开node1:50070、node2:50070：可以看到node1为“active”状态、node2为“standby”
+        - 查看node1的namenode进程号，kill掉：
+            jps：看namenode进程号
+            kill -9 <进程号>
+            jps：确认namenode进程是否关闭
+        - 浏览器分别打开node1:50070、node2:50070：可以看到node1已经打不开、node2为“active”
+        - 在node1上恢复namenode：hadoop-daemon.sh start namenode
+        - 浏览器分别打开node1:50070、node2:50070：可以看到node1为“standby”状态、node2为“active”
+        - 说明zookeeper正常完成了namenode宕机时的漂移处理
+    3.9：实验2：关掉active的zkfc，看会不会漂移到standby的namenode：
+        - 查看node2的zkfc进程号，kill掉：
+            jps：看zkfc进程号
+            kill -9 <进程号>
+            jps：确认namenode进程是否关闭
+        - 浏览器分别打开node1:50070、node2:50070：可以看到node1为“active”状态、node2为“standby”
+        - 说明：zookeeper正常完成了namenode的zkfc功能失效时的漂移处理
+    3.10：到active的namenode（node1）上尝试停止hdfs：
+        - jps：看java进程都有哪些
+        - stop-dfs.sh：停止hdfs
+        - jps：可以看到zkfc、namenode、datanode、journalnode都被关掉，只有QuorumPeerMain保留
+        - 说明：zkServer不依赖hdfs，但zkfc依赖hdfs；
+    3.8：异常处理：
+        - 可能出现以下错误提示：
+            2021-07-10 12:37:54,541 [myid:] - WARN  [main-SendThread(localhost:2181):ClientCnxn$SendThread@1102] - 
+            Session 0x0 for server null, unexpected error, closing socket connection and attempting reconnect
+            java.net.ConnectException: Connection refused
+        - 原因1：server编号和id没对上，即/opt/zookeeper-3.4.6/conf/zoo.cfg中指定了几个zkServer.<id>，但实际没有哪个node的
+            的cat /var/bjsxt/zookeeper/data/myid的值和上述<id>对应；
+        - 原因2：zkServer的各个node没有启动服务：要用zkServer.sh start启动；
+        
