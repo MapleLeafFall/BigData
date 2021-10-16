@@ -890,7 +890,7 @@ keepalived（可用于nginx服务器的高可用）、VRRP、VIP、VRID、IP漂�
         cp zoo_sample.cfg zoo.cfg
         vim zoo.cfg
             修改：dataDir=/var/bjsxt/zookeeper/data
-            添加：server.1=node2:2881:3881
+            添加：server.1=node2:2881:3881（投票端口2881、选举端口3881）
                     server.2=node3:2881:3881
                     server.3=node4:2881:3881
     3.4：准备zookeeper运行环境：
@@ -1041,7 +1041,7 @@ keepalived（可用于nginx服务器的高可用）、VRRP、VIP、VRID、IP漂�
         - stop-dfs.sh：停止hdfs
         - jps：可以看到zkfc、namenode、datanode、journalnode都被关掉，只有QuorumPeerMain保留
         - 说明：zkServer不依赖hdfs，但zkfc依赖hdfs；
-    3.8：异常处理：
+    3.11：异常处理：
         - 可能出现以下错误提示：
             2021-07-10 12:37:54,541 [myid:] - WARN  [main-SendThread(localhost:2181):ClientCnxn$SendThread@1102] - 
             Session 0x0 for server null, unexpected error, closing socket connection and attempting reconnect
@@ -1050,3 +1050,47 @@ keepalived（可用于nginx服务器的高可用）、VRRP、VIP、VRID、IP漂�
             的cat /var/bjsxt/zookeeper/data/myid的值和上述<id>对应；
         - 原因2：zkServer的各个node没有启动服务：要用zkServer.sh start启动；
         
+0711：
+1、P75：复习
+（1）写流程；
+（2）读流程；
+（3）完全分布式搭建：（重要）“分布式搭建是运维的事”
+    3.1：指定namenode位置：core-site.xml的fs.defaultFS；
+    3.2：指定secondarynamenode位置：hdfs-site.xml的second.http-address；
+    3.3：指定datanode位置：slaves；
+    3.4：现在namenode指定节点格式化，然后可以启动：start-dfs.sh；
+    3.5：停止：stop-dfs.sh；
+（4）联邦：
+    4.1：解决namenode内存过小的问题；
+    4.2：多个namenode共享namenode节点，每个namenode记录一部分元数据；
+    4.3：所谓的一部分元数据：按照目录划分的；
+（5）HA：（实际目前只支持两个namenode）
+    5.1：解决namenode单点故障的问题；
+    5.2：jnn（journalnamenode）
+        - 保存edits.log信息
+        - 过半机制保证jnn的高可用、分区容忍性、最终一致性
+    5.3：active的namenode1：
+        - 负责对外提供服务，同时将edits.log信息写到jnn中
+    5.4：standby的namenode2：
+        - 从jnn下载edits.log信息，用于同步自己的内存状态
+        - 定期合并fsimage和edits.log
+        - 一旦active的namenode1宕机，namenode2在保证namenode1不对外提供服务的情况下转换为active状态
+    5.5：datanode：
+        - 向两台namenode汇报block列表、心跳等
+    5.6：zk集群：
+        - 分布式锁：抢占机制创建临时节点，谁创建成功，谁就是active的namenode
+    5.7：zkfc：
+        - 监控本机namenode的状态
+        - 和zk建立连接，保持心跳
+        - 当没有active namenode的时候为自己所在的namenode在zk抢占临时节点，抢占active
+        - 如果自己所在的namenode不健康，则让zk删除临时节点，让对方抢占
+        - 如果自己zkfc退出，则在zk的临时节点消失，对方自动抢占
+
+0712：
+1、跳过P76（windows通过java操作hdfs）~P79（java操作hdfs-本地读取）
+2、P81：mapreduce过程：
+（1）mapreduce之所以比较慢，是因为落磁盘（写磁盘）、网络io的操作比较多（后面的应用用spark替换mapreduce）；
+（2）map的环形缓冲区默认为100MB、阈值80%、定义在内存中（而不是慢得多的磁盘）：
+    2.1：当写入数据达到80%时，即锁定缓冲区，并发起数据传输给reducer；
+    2.2：后续20%数据讲写到磁盘中（“落磁盘”）；
+    
